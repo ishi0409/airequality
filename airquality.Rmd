@@ -1,0 +1,243 @@
+---
+title: "AirQuality"
+author: '@y'
+date: "2026-03-11"
+output:
+  html_document: default
+  output: github_document
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## イントロダクション
+
+Rのdatasetであるairqualityを用いて欠測値が含まれる変数の真の平均値を統計的手法を用いて推定する。
+
+データセットは下記のデータを使用する
+
+```{r data}
+data("airquality")
+df = airquality
+attach(df)
+```
+
+## 1. データの概要
+
+airquality datasetは1973年5月から9月にかけてニューヨークで行われた毎日の空気質の測定値(計153日分)である。
+
+### 1.1 形式
+
+各変数の意味と単位は以下の通りである。
+
+| 変数名      | 内容             | 単位   | 備考                           |
+|:------------|:-----------------|:-------|:-------------------------------|
+| **Ozone**   | 対流圏オゾン濃度 | ppb    | 本分析の主要変数。欠測が多い。 |
+| **Solar.R** | 日射量           | lang   | 太陽光の強さ。                 |
+| **Wind**    | 平均風速         | mph    |                                |
+| **Temp**    | 最高気温         | °F     | 華氏（アメリカの単位系）。     |
+| **Month**   | 月               | 5 - 9  | 5月から9月までを記録。         |
+| **Day**     | 日               | 1 - 31 |                                |
+
+### 1.2 データの統計的特徴
+
+本データの統計量は以下の通りである。
+
+```{r EDA1, echo=F, warning=FALSE}
+library(knitr)
+kable(summary(df), caption = "airqualityデータセットの要約統計量")
+
+```
+
+### 1.2.1 主要変数の記述統計
+
+本分析で重要となるOzoneとTempの統計量を抜粋した.
+
+|  変数名   | 平均値 | 標準偏差 | 最小値 | 最大値 |     欠測数     |
+|:---------:|:------:|:--------:|:------:|:------:|:--------------:|
+| **Ozone** |  42.1  |   33.0   |   1    |  168   | **37 (24.2%)** |
+| **Temp**  |  77.9  |   9.5    |   56   |   97   |       0        |
+
+上記の表から、Ozoneは欠測率が高く、そのままの平均値(42.1)にはバイアスが含まれていることが予想できる。
+
+## 2 欠測メカニズムの検討と仮定
+
+### 2.1 欠測パターンの検討
+
+Ozoneの欠測の発生メカニズムの仮説を立てる。 まず、欠測が発生している変数に対して欠測指標(欠測値なら1,観測値なら0)をデータに追加する
+
+```{r mis_data}
+df$Ozone_miss = as.numeric(is.na(Ozone))
+
+df$Solar_miss = as.numeric(is.na(Solar.R))
+```
+
+### 2.2 Littleの検定
+
+Littleの検定は全変数の平均の欠測パターンによる違いを比較する方法である。(高井、星野、野間 2016)
+
+具体的には帰無仮説をデータがMCAR(完全にランダムな欠測)として検定を行う。 帰無仮説が棄却されれば、データはMAR(ランダムな欠測)か NMAR(ランダムでない欠測)と判断できる目安の一つになり得る
+
+```{r Little, echo=FALSE, warning=FALSE}
+library(naniar)
+mcar_result = mcar_test(df)
+mcar_result
+```
+
+上記の結果からp値が十分に小さいため、帰無仮説は棄却され、本データの欠測発生メカニズムはMARかNMARであると判断できる
+
+### 2.2.1 Littleの検定の注意点
+
+しかし、Littleの検定は異なる欠測パターン間で分散が共通であることや、データの正規性を強く仮定する手法であるため、本データのような非正規性の可能性がある環境データには適さない場合が考えられる。
+
+したがって、本分析ではLittleの検定の結果を参照しつつ、ロジスティック回帰を用いて欠測確率と変数の関係を直接モデル化することで実際のデータに即したメカニズムの特定を行った.  
+
+### 2.3 欠測と変数の関係の確認  
+
+2.1において作成したOzoneの欠測指標を目的変数としてどのデータがOzoneの欠測に関係しているかを確かめる。  
+
+```{r logist}
+
+# 説明変数には欠測値を含まない変数を使用する
+res = glm(Ozone_miss ~ Wind + Temp + Month + Day + Solar_miss, data = df, family = binomial)
+
+summary(res)
+```
+
+上記の結果からOzoneの欠測に関してMonthとTempが統計的に有意であることが判明した。
+解釈として、Monthが大きくなるほどOzoneの欠測確率が減少し、Tempが大きくなるほどOzoneの欠測確率が増加すると考えられる
+
+### 2.3.1 MonthとTempそれぞれのOzoneの欠測確率への影響
+
+2.3においてOzoneの欠測確率にMonthとTempが関係していることが分かった。
+したがって、Month、Temp単体がOzoneの欠測にどれくらい影響を持つかを確認する  
+
+```{r month}
+
+# Monthをそれぞれが独立したグループとして扱うために、ファクターに変換する。
+month_glm = glm(Ozone_miss ~ as.factor(Month), data = df, family = binomial)
+
+summary(month_glm)
+
+```
+
+```{r Temp}
+Temp_glm = glm(Ozone_miss ~ Temp, data = df, family = binomial)
+
+summary(Temp_glm)
+```
+
+上記の結果から、Monthにおいて6月のグループがOzoneの欠測確率に対し、強い影響を持っていることが分かるが、Tempに関しては単体だと統計的に有意では無くなった.  
+
+したがって、Monthの6月のグループがOzoneの欠測確率に大きく影響していると仮定して、Monthと欠測確率の関係を図示する。
+
+```{r Month_plot, echo=FALSE}
+plot(Month, Temp, col = ifelse(is.na(Ozone), "red", "green"),
+                               main = "月:気温別のOzoneの欠測発生(赤)",
+                               xlab = "Month", ylab = "Temp")
+
+```
+
+上記の図から6月において欠測値が集中していること視覚的にはっきりと分かる。  
+
+## 2.3 欠測メカニズムの仮定の結論
+
+・Month及びTempがOzoneの欠測確率に対し、統計的に有意であること  
+・Monthの6月において、Ozoneの欠測値が集中していること  
+
+上記の結果から本分析においては、欠測のメカニズムはMAR(ランダムな欠測)であると仮定する。  
+
+### 2.4 欠測確率モデルの作成
+
+2.3.1で確認したように明らかになった欠測の偏りを補正するため、各観測値のデータが観測される確率を推定するプロペンシティスコア・モデルを構築する。 
+
+ここでは2.3においてOzoneの欠測確率に対し、統計的に有意であった変数MonthとTempを使用する。
+
+```{r model1}
+# 欠測確率を計算
+res_final = glm(Ozone_miss ~ as.factor(Month) + Temp, family = binomial, data = df)
+
+# 欠測確率(ps)を予測
+df$ps = predict(res_final, type = "response")
+
+# 欠測値なら0,観測値なら観測される確率(1 - ps)で重みをつける。
+df$weight = ifelse(is.na(Ozone), 0, 1 / (1 - df$ps))
+
+# 計算した重みでOzoneの平均値を計算する
+mean_ipw = sum(Ozone * df$weight, na.rm = T) / sum(df$weight)
+
+mean_ipw
+```
+
+上記の結果から観測される確率を重みとした(IPW)欠測確率モデルにおいて、推定されたOzoneの平均値は40であり、リストワイズ除去の平均値42とくらべて減少した。
+これは６月のデータを考慮した結果、６月のオゾン濃度が他の月とくらべて低かったということを示唆している。  
+
+### 2.4.1 欠測確率モデルのまとめ
+
+観測値に対して、観測される確率を重みとすることで本来観測されるはずであった欠測値の情報の重みを統計的に再現することが可能になった。  
+
+### 2.4.2 欠測確率モデルの問題点
+
+2.4のような重み付き推定は欠測のある変数については完全ケースのみのデータを利用しているため効率的でない。  
+また、仮定する欠測の発生メカニズムを誤設定してしまうと、バイアスが生じてしまう。  
+そこで、欠測確率モデルの重み付き推定だけでなく、直接尤度のパラメータを用いたパラメトリックなモデルも仮定することで、これらのどちらかが正しいモデルであれば一致性を持つ。  
+
+
+### 2.5 パラメトリックなモデル
+
+2.4.2で述べたように直接尤度のパラメータを推定する。  
+
+```{r parametric}
+res_outcome = lm(Ozone ~ Wind + Temp + as.factor(Month) + Day + Solar_miss , data = df)
+
+#回帰モデルで欠測値も含めて予測して埋める
+df$Ozone_hat = predict(res_outcome, newdata = df)  
+
+```
+
+
+### 2.6 二重にロバストな推定(DR法)
+
+DR法では欠測の発生モデル(2.4)とパラメトリックなモデル(2.5)の両方のモデルを用いることで、どちらかが正しいモデルであればバイアスのない推定値を得られる。  
+
+
+```{r double_robust}
+dr_values = df$Ozone_hat + (df$weight * (ifelse(is.na(df$Ozone), 0, df$Ozone) - df$Ozone_hat))
+
+mean_dr = mean(dr_values)
+mean_dr
+```
+
+上記の結果からDR法で得られたOzoneの平均値の推定値は41であった。  
+
+## 3 推定の結果の解釈  
+
+本分析で推定したOzoneの平均値の推定値を比較する。  
+
+```{r res,  echo=F}
+
+library(knitr)
+
+method = c("リストワイズ除去", "逆確率重み付け(IPW)", "二重にロバストな推定(DR)")
+estimate = c(round(mean(Ozone, na.rm = T)),
+                   round(mean_ipw, 1),
+                   round(mean_dr, 1))
+
+res_df = data.frame("手法" = method, "推定平均値" = estimate)
+
+kable(res_df, caption = "手法別Ozone平均推定値の比較")
+```
+
+## 結論
+
+本分析の結果、リストワイズ除去と比べDR法による推定値は低い値となった。  
+
+これは6月のオゾン濃度が他の月と比べ相対的に低かったことを示唆している。  
+
+リストワイズ助教で過大評価のバイアスが生じていいたが、統計的補正により、より正確な推定値を求めることができた。  
+
+## 参考文献
+
+* 高井 啓二, 星野 崇宏, 野間 久史 (2016). 『欠測データの統計科学』岩波書店.
